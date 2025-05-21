@@ -58,8 +58,8 @@ const handler = async (req: Request): Promise<Response> => {
       steamData.publisher = data.publishers?.[0] ?? null;
       steamData.review_score = data.metacritic?.score ?? null;
     }
-  } catch {
-
+  } catch (e) {
+    console.warn("Steam fetch failed:", e);
   }
 
   let timeData: any = {};
@@ -95,8 +95,8 @@ const handler = async (req: Request): Promise<Response> => {
           completionist_leisure: game.leisureCompletionist ?? null,
         };
       }
-    } catch {
-
+    } catch (e) {
+      console.warn("HLTB fetch failed:", e);
     }
   }
 
