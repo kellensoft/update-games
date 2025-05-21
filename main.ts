@@ -7,6 +7,36 @@ const API_KEY = Deno.env.get("API_KEY")!;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+interface GameFields {
+  appid: number;
+  name: string;
+  description: string | null;
+  release_date: string | null;
+  developer: string | null;
+  publisher: string | null;
+  review_score: number | null;
+  owners: number;
+}
+
+interface TimeFields {
+  main_avg: number | null;
+  main_polled: number | null;
+  main_median: number | null;
+  main_rushed: number | null;
+  main_leisure: number | null;
+  extra_avg: number | null;
+  extra_polled: number | null;
+  extra_median: number | null;
+  extra_rushed: number | null;
+  extra_leisure: number | null;
+  completionist_avg: number | null;
+  completionist_polled: number | null;
+  completionist_median: number | null;
+  completionist_rushed: number | null;
+  completionist_leisure: number | null;
+}
+
+
 const handler = async (req: Request): Promise<Response> => {
   if (req.method !== "POST") {
     return new Response("POST required", { status: 405 });
@@ -45,7 +75,7 @@ const handler = async (req: Request): Promise<Response> => {
     return new Response("Supabase image upload failed", { status: 500 });
   }
 
-  let steamData: any = {};
+  const steamData: Partial<GameFields> = {};
   try {
     const res = await fetch(`https://store.steampowered.com/api/appdetails?appids=${appid}`);
     const json = await res.json();
@@ -62,7 +92,7 @@ const handler = async (req: Request): Promise<Response> => {
     console.warn("Steam fetch failed:", e);
   }
 
-  let timeData: any = {};
+  let timeData: Partial<TimeFields> = {};
   if (steamData.name) {
     try {
       const searchUrl = "https://howlongtobeat.com/api/search";
