@@ -24,5 +24,5 @@ deno run --allow-net --allow-env main.ts
 
 ## example use
 ```
-curl -X POST -H 'Content-Type: application/json' -H 'x-api-key: API_KEY' -d {"appid":730}' http://localhost:8000
+curl -X POST -H 'Content-Type: application/json' -H 'x-api-key: API_KEY' -d '{"appid":730}' http://localhost:8000
 ```
