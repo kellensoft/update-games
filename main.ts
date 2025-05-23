@@ -7,6 +7,10 @@ const SUPABASE_BUCKET = Deno.env.get("SUPABASE_BUCKET");
 const SEARCH_URL = Deno.env.get("SEARCH_URL");
 const API_KEY = Deno.env.get("API_KEY")!;
 
+if (!SUPABASE_URL || !SUPABASE_KEY || !SUPABASE_BUCKET || !SEARCH_URL || !API_KEY) {
+  throw new Error("Missing environment variables");
+}
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 interface GameFields {
@@ -39,7 +43,6 @@ interface TimeFields {
 }
 
 function filterNulls<T extends Record<string, unknown>>(data: T): Partial<T> {
-  // Only include keys with non-null and non-undefined values
   return Object.fromEntries(
     Object.entries(data).filter(([_, v]) => v !== null && v !== undefined)
   ) as Partial<T>;
@@ -60,15 +63,11 @@ const handler = async (req: Request): Promise<Response> => {
     return new Response("Invalid JSON", { status: 400 });
   }
   const { type = "steam" } = body as { type?: string };
-  // ──────────────
-  // STEAM HANDLING
-  // ──────────────
   if (type === "steam") {
     const appid = body.appid;
     if (!appid || typeof appid !== "number") {
       return new Response("Missing or invalid appid", { status: 400 });
     }
-    // 1. Fetch Steam capsule image and upload to Supabase
     const imgUrl = `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appid}/capsule_sm_120.jpg`;
     const imgRes = await fetch(imgUrl);
     if (imgRes.ok) {
@@ -100,7 +99,6 @@ const handler = async (req: Request): Promise<Response> => {
     } catch (e) {
       console.warn("Steam fetch failed:", e);
     }
-    // 3. HLTB scrape by name
     let timeData: Partial<TimeFields> = {};
     if (steamData.name) {
       try {
@@ -120,7 +118,6 @@ const handler = async (req: Request): Promise<Response> => {
         console.warn("HLTB fetch failed:", e);
       }
     }
-    // 4. Merge & Upsert (merge only non-null fields)
     const upsertData = { ...filterNulls(steamData), ...filterNulls(timeData) };
     const { data, error: upsertError } = await supabase
       .from("games")
@@ -132,15 +129,11 @@ const handler = async (req: Request): Promise<Response> => {
     }
     return Response.json(data);
   }
-  // ──────────────
-  // HLTB HANDLING
-  // ──────────────
   if (type === "hltb") {
     const { name } = body;
     if (!name || typeof name !== "string") {
       return new Response("Missing or invalid name", { status: 400 });
     }
-    // Only call HLTB microservice!
     let timeData: Partial<TimeFields> = {};
     try {
       const hltbRes = await fetch(SEARCH_URL, {
@@ -161,20 +154,15 @@ const handler = async (req: Request): Promise<Response> => {
       console.warn("HLTB fetch failed:", e);
       return new Response("HLTB fetch failed", { status: 500 });
     }
-    // We need to identify which row to update!
-    // Use hltb_id if available, or match on name.
     const upsertWhere: Record<string, unknown> = timeData.hltb_id
       ? { hltb_id: timeData.hltb_id }
       : { name };
-    // Upsert by merging non-null fields (DO NOT overwrite with nulls)
-    // Get previous record, update with non-null fields
     const { data: oldRows, error: getError } = await supabase
       .from("games")
       .select("*")
       .match(upsertWhere)
       .limit(1);
     if (getError || !oldRows?.length) {
-      // Create new if none
       const { data, error: insErr } = await supabase
         .from("games")
         .upsert([{ ...filterNulls(timeData), name }])
@@ -183,7 +171,6 @@ const handler = async (req: Request): Promise<Response> => {
       if (insErr) return new Response("Supabase upsert failed", { status: 500 });
       return Response.json(data);
     } else {
-      // Update only with non-null fields
       const old = oldRows[0];
       const update = { ...old, ...filterNulls(timeData) };
       const { data, error: updErr } = await supabase
