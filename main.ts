@@ -1,14 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
+//import "https://deno.land/std@0.224.0/dotenv/load.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SUPABASE_BUCKET = Deno.env.get("SUPABASE_BUCKET");
+const SEARCH_URL = Deno.env.get("SEARCH_URL");
 const API_KEY = Deno.env.get("API_KEY")!;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 interface GameFields {
-  appid: number;
+  appid: number | null;
   name: string;
   description: string | null;
   release_date: string | null;
@@ -17,8 +19,8 @@ interface GameFields {
   review_score: number | null;
   owners: number;
 }
-
 interface TimeFields {
+  hltb_id: number | null;
   main_avg: number | null;
   main_polled: number | null;
   main_median: number | null;
@@ -36,121 +38,164 @@ interface TimeFields {
   completionist_leisure: number | null;
 }
 
+function filterNulls<T extends Record<string, unknown>>(data: T): Partial<T> {
+  // Only include keys with non-null and non-undefined values
+  return Object.fromEntries(
+    Object.entries(data).filter(([_, v]) => v !== null && v !== undefined)
+  ) as Partial<T>;
+}
 
 const handler = async (req: Request): Promise<Response> => {
   if (req.method !== "POST") {
     return new Response("POST required", { status: 405 });
   }
-
   const reqKey = req.headers.get("x-api-key");
   if (reqKey !== API_KEY) {
     return new Response("Unauthorized", { status: 401 });
   }
-
   let body;
   try {
     body = await req.json();
   } catch {
     return new Response("Invalid JSON", { status: 400 });
   }
-
-  const appid = body.appid;
-  if (!appid || typeof appid !== "number") {
-    return new Response("Missing or invalid appid", { status: 400 });
-  }
-
-  const imgUrl = `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appid}/capsule_sm_120.jpg`;
-  const imgRes = await fetch(imgUrl);
-  if (!imgRes.ok) {
-    return new Response("Image fetch failed", { status: 404 });
-  }
-  const imgBuf = new Uint8Array(await imgRes.arrayBuffer());
-
-  const imgPath = `${appid}.jpg`;
-  const { error: uploadError } = await supabase
-    .storage
-    .from(SUPABASE_BUCKET)
-    .upload(imgPath, imgBuf, { upsert: true, contentType: "image/jpeg" });
-  if (uploadError) {
-    return new Response("Supabase image upload failed", { status: 500 });
-  }
-
-  const steamData: Partial<GameFields> = {};
-  try {
-    const res = await fetch(`https://store.steampowered.com/api/appdetails?appids=${appid}`);
-    const json = await res.json();
-    if (json[appid]?.success) {
-      const data = json[appid].data;
-      steamData.name = data.name;
-      steamData.description = data.short_description ?? null;
-      steamData.release_date = data.release_date?.date ?? null;
-      steamData.developer = data.developers?.[0] ?? null;
-      steamData.publisher = data.publishers?.[0] ?? null;
-      steamData.review_score = data.metacritic?.score ?? null;
+  const { type = "steam" } = body as { type?: string };
+  // ──────────────
+  // STEAM HANDLING
+  // ──────────────
+  if (type === "steam") {
+    const appid = body.appid;
+    if (!appid || typeof appid !== "number") {
+      return new Response("Missing or invalid appid", { status: 400 });
     }
-  } catch (e) {
-    console.warn("Steam fetch failed:", e);
-  }
-
-  let timeData: Partial<TimeFields> = {};
-  if (steamData.name) {
+    // 1. Fetch Steam capsule image and upload to Supabase
+    const imgUrl = `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${appid}/capsule_sm_120.jpg`;
+    const imgRes = await fetch(imgUrl);
+    if (imgRes.ok) {
+      const imgBuf = new Uint8Array(await imgRes.arrayBuffer());
+      const imgPath = `${appid}.jpg`;
+      const { error: uploadError } = await supabase
+        .storage
+        .from(SUPABASE_BUCKET)
+        .upload(imgPath, imgBuf, { upsert: true, contentType: "image/jpeg" });
+      if (uploadError) {
+        console.warn("Supabase image upload failed:", uploadError);
+      }
+    }
+    // 2. Fetch Steam data
+    const steamData: Partial<GameFields> = { appid };
     try {
-      const searchUrl = "https://howlongtobeat.com/api/search";
-      const hltbRes = await fetch(searchUrl, {
+      const res = await fetch(`https://store.steampowered.com/api/appdetails?appids=${appid}`);
+      const json = await res.json();
+      if (json[appid]?.success) {
+        const data = json[appid].data;
+        steamData.name = data.name;
+        steamData.description = data.short_description ?? null;
+        steamData.release_date = data.release_date?.date ?? null;
+        steamData.developer = data.developers?.[0] ?? null;
+        steamData.publisher = data.publishers?.[0] ?? null;
+        steamData.review_score = data.metacritic?.score ?? null;
+        steamData.owners = 0;
+      }
+    } catch (e) {
+      console.warn("Steam fetch failed:", e);
+    }
+    // 3. HLTB scrape by name
+    let timeData: Partial<TimeFields> = {};
+    if (steamData.name) {
+      try {
+        const hltbRes = await fetch(SEARCH_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; HLTBScraper/1.0)",
+          },
+          body: JSON.stringify({ name: steamData.name }),
+        });
+        if (hltbRes.ok) {
+          const hltbJson = await hltbRes.json();
+          timeData = filterNulls(hltbJson);
+        }
+      } catch (e) {
+        console.warn("HLTB fetch failed:", e);
+      }
+    }
+    // 4. Merge & Upsert (merge only non-null fields)
+    const upsertData = { ...filterNulls(steamData), ...filterNulls(timeData) };
+    const { data, error: upsertError } = await supabase
+      .from("games")
+      .upsert([upsertData], { onConflict: ["appid"] })
+      .select()
+      .single();
+    if (upsertError) {
+      return new Response("Supabase DB upsert failed", { status: 500 });
+    }
+    return Response.json(data);
+  }
+  // ──────────────
+  // HLTB HANDLING
+  // ──────────────
+  if (type === "hltb") {
+    const { name } = body;
+    if (!name || typeof name !== "string") {
+      return new Response("Missing or invalid name", { status: 400 });
+    }
+    // Only call HLTB microservice!
+    let timeData: Partial<TimeFields> = {};
+    try {
+      const hltbRes = await fetch(SEARCH_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "User-Agent": "Mozilla/5.0 (compatible; HLTBScraper/1.0)",
         },
-        body: JSON.stringify({ searchType: "games", searchTerms: steamData.name.split(" "), size: 1 }),
+        body: JSON.stringify({ name }),
       });
-      const hltbJson = await hltbRes.json();
-      const game = hltbJson.data?.[0];
-      if (game) {
-        timeData = {
-          main_avg: game.gameplayMain ?? null,
-          main_polled: game.compMain ?? null,
-          main_median: game.medianMain ?? null,
-          main_rushed: game.rushedMain ?? null,
-          main_leisure: game.leisureMain ?? null,
-          extra_avg: game.gameplayMainExtra ?? null,
-          extra_polled: game.compMainExtra ?? null,
-          extra_median: game.medianMainExtra ?? null,
-          extra_rushed: game.rushedMainExtra ?? null,
-          extra_leisure: game.leisureMainExtra ?? null,
-          completionist_avg: game.gameplayCompletionist ?? null,
-          completionist_polled: game.compCompletionist ?? null,
-          completionist_median: game.medianCompletionist ?? null,
-          completionist_rushed: game.rushedCompletionist ?? null,
-          completionist_leisure: game.leisureCompletionist ?? null,
-        };
+      if (hltbRes.ok) {
+        const hltbJson = await hltbRes.json();
+        timeData = filterNulls(hltbJson);
+      } else {
+        return new Response("HLTB not found", { status: 404 });
       }
     } catch (e) {
       console.warn("HLTB fetch failed:", e);
+      return new Response("HLTB fetch failed", { status: 500 });
+    }
+    // We need to identify which row to update!
+    // Use hltb_id if available, or match on name.
+    const upsertWhere: Record<string, unknown> = timeData.hltb_id
+      ? { hltb_id: timeData.hltb_id }
+      : { name };
+    // Upsert by merging non-null fields (DO NOT overwrite with nulls)
+    // Get previous record, update with non-null fields
+    const { data: oldRows, error: getError } = await supabase
+      .from("games")
+      .select("*")
+      .match(upsertWhere)
+      .limit(1);
+    if (getError || !oldRows?.length) {
+      // Create new if none
+      const { data, error: insErr } = await supabase
+        .from("games")
+        .upsert([{ ...filterNulls(timeData), name }])
+        .select()
+        .single();
+      if (insErr) return new Response("Supabase upsert failed", { status: 500 });
+      return Response.json(data);
+    } else {
+      // Update only with non-null fields
+      const old = oldRows[0];
+      const update = { ...old, ...filterNulls(timeData) };
+      const { data, error: updErr } = await supabase
+        .from("games")
+        .upsert([update], { onConflict: ["appid"] })
+        .select()
+        .single();
+      if (updErr) return new Response("Supabase update failed", { status: 500 });
+      return Response.json(data);
     }
   }
-
-  const upsertData = {
-    appid,
-    name: steamData.name ?? "",
-    description: steamData.description ?? null,
-    release_date: steamData.release_date ?? null,
-    developer: steamData.developer ?? null,
-    publisher: steamData.publisher ?? null,
-    review_score: steamData.review_score ?? null,
-    owners: 0,
-    ...timeData,
-  };
-  const { data, error: upsertError } = await supabase
-    .from("games")
-    .upsert([upsertData], { onConflict: ["appid"] })
-    .select()
-    .single();
-  if (upsertError) {
-    return new Response("Supabase DB upsert failed", { status: 500 });
-  }
-
-  return Response.json(data);
+  return new Response("Invalid type", { status: 400 });
 };
 
 Deno.serve(handler);
