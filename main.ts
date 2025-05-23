@@ -121,7 +121,7 @@ const handler = async (req: Request): Promise<Response> => {
     const upsertData = { ...filterNulls(steamData), ...filterNulls(timeData) };
     const { data, error: upsertError } = await supabase
       .from("games")
-      .upsert([upsertData], { onConflict: ["appid"] })
+      .upsert([upsertData], { onConflict: "appid" })
       .select()
       .single();
     if (upsertError) {
@@ -173,12 +173,12 @@ const handler = async (req: Request): Promise<Response> => {
     } else {
       const old = oldRows[0];
       const update = { ...old, ...filterNulls(timeData) };
-      const { data, error: updErr } = await supabase
+      const { data, error: upsertError } = await supabase
         .from("games")
-        .upsert([update], { onConflict: ["appid"] })
+        .upsert([update], { onConflict: "appid" })
         .select()
         .single();
-      if (updErr) return new Response("Supabase update failed", { status: 500 });
+      if (upsertError) return new Response("Supabase update failed", { status: 500 });
       return Response.json(data);
     }
   }
